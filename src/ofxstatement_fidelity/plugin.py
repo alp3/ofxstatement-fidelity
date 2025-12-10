@@ -7,7 +7,8 @@ from os import path
 
 from ofxstatement.plugin import Plugin
 from ofxstatement.parser import AbstractStatementParser
-from ofxstatement.statement import Statement, InvestStatementLine, StatementLine
+from ofxstatement.plugin import Plugin
+from ofxstatement.statement import InvestStatementLine, Statement, StatementLine
 
 
 class FidelityPlugin(Plugin):
@@ -126,19 +127,138 @@ class FidelityCSVParser(AbstractStatementParser):
                 invest_stmt_line.trntype_detailed = detailed
                 break
 
-        # 2. Extract Data based on Type
-        if invest_stmt_line.trntype in ("BUYSTOCK", "SELLSTOCK"):
+        date = datetime.strptime(line[0][0:10], "%m/%d/%Y")
+        invest_stmt_line.date = date
+        id = self.id_generator.create_id(date)
+        invest_stmt_line.id = id
+
+        match_result = re.match(r"^REINVESTMENT ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "BUYSTOCK"
+            invest_stmt_line.trntype_detailed = "BUY"
             invest_stmt_line.security_id = line[2]
-            invest_stmt_line.unit_price = self.parse_decimal(line[5])
-            invest_stmt_line.units = self.parse_decimal(line[6])
+            invest_stmt_line.unit_price = Decimal(line[5])
+            invest_stmt_line.units = Decimal(line[6])
+            return invest_stmt_line
 
         elif (
             invest_stmt_line.trntype == "INCOME"
             and invest_stmt_line.trntype_detailed == "DIV"
         ):
             invest_stmt_line.security_id = line[2]
+            return invest_stmt_line
 
-        return invest_stmt_line
+        match_result = re.match(r"^DIRECT DEBIT ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "INVBANKTRAN"
+            invest_stmt_line.trntype_detailed = "DEBIT"
+            return invest_stmt_line
+
+        match_result = re.match(r"^Electronic Funds Transfer Paid ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "INVBANKTRAN"
+            invest_stmt_line.trntype_detailed = "DEBIT"
+            return invest_stmt_line
+
+        match_result = re.match(r"^TRANSFERRED FROM ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "INVBANKTRAN"
+            invest_stmt_line.trntype_detailed = "CREDIT"
+            return invest_stmt_line
+
+        match_result = re.match(r"^TRANSFERRED TO ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "INVBANKTRAN"
+            invest_stmt_line.trntype_detailed = "DEBIT"
+            return invest_stmt_line
+
+        match_result = re.match(r"^DIRECT DEPOSIT ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "INVBANKTRAN"
+            invest_stmt_line.trntype_detailed = "CREDIT"
+            return invest_stmt_line
+
+        match_result = re.match(r"^INTEREST EARNED ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "INVBANKTRAN"
+            invest_stmt_line.trntype_detailed = "CREDIT"
+            return invest_stmt_line
+
+        match_result = re.match(r"^ROLLOVER CASH", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "INVBANKTRAN"
+            invest_stmt_line.trntype_detailed = "CREDIT"
+            return invest_stmt_line
+
+        # Transfer of Assets: could be cash or securities
+        toa_common_str = r"TRANSFER OF ASSETS ACAT "
+        match_result = re.match(r"^" + toa_common_str, line[1])
+        if match_result:
+            remaining = line[1][len(toa_common_str) :]
+            if remaining == "RECEIVE (Cash)" or remaining == "RES.CREDIT (Cash)":
+                # Transfer of Assets: cash. Two forms: RECEIVE or RES.CREDIT
+                invest_stmt_line.trntype = "INVBANKTRAN"
+                invest_stmt_line.trntype_detailed = "XFER"
+                invest_stmt_line.amount = Decimal(line[10])
+                return invest_stmt_line
+            else:
+                # Transfer of Assets: security
+                invest_stmt_line.trntype = "TRANSFER"
+                invest_stmt_line.security_id = line[2]
+                # Fidelity CSV stores the shares at line[6]
+                invest_stmt_line.units = Decimal(line[6])
+                # This is a pure stock transfer; make sure cash value is 0
+                invest_stmt_line.amount = Decimal("0")
+                return invest_stmt_line
+
+        # USA T-Bill purchase (must come before security purchase due to security purchase's more general regex)
+        if re.match(r"^YOU BOUGHT .*UNITED STATES TREAS BILLS", line[1]):
+            invest_stmt_line.trntype = "BUYDEBT"
+            invest_stmt_line.security_id = line[2]  # CUSIP
+            units_in_dollars = Decimal(line[6])
+            invest_stmt_line.units = units_in_dollars
+            # Calculate unit price from amount and units, because line[5] is rounded leading to roundoff error.
+            assert invest_stmt_line.amount is not None
+            invest_stmt_line.unit_price = (
+                abs(invest_stmt_line.amount) / units_in_dollars
+            ) * 100  # e.g., 99.08 which means "99.08% of par"
+            return invest_stmt_line
+
+        # USA T-Bills redemption
+        if re.match(r"^REDEMPTION PAYOUT .*UNITED STATES TREAS BILLS", line[1]):
+
+            invest_stmt_line.trntype = "SELLDEBT"
+            invest_stmt_line.trntype_detailed = "SELL"
+            invest_stmt_line.security_id = line[2]  # CUSIP
+            invest_stmt_line.unit_price = Decimal(
+                "100"
+            )  # T-Bills always sold at 100% of par
+            invest_stmt_line.units = abs(Decimal(line[6]))
+
+            return invest_stmt_line
+
+        # Security purchase
+        match_result = re.match(r"^YOU BOUGHT ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "BUYSTOCK"
+            invest_stmt_line.trntype_detailed = "BUY"
+            invest_stmt_line.security_id = line[2]
+            invest_stmt_line.unit_price = Decimal(line[5])
+            invest_stmt_line.units = Decimal(line[6])
+            return invest_stmt_line
+
+        # Security sale
+        match_result = re.match(r"^YOU SOLD ", line[1])
+        if match_result:
+            invest_stmt_line.trntype = "SELLSTOCK"
+            invest_stmt_line.trntype_detailed = "SELL"
+            invest_stmt_line.security_id = line[2]
+            invest_stmt_line.unit_price = Decimal(line[5])
+            invest_stmt_line.units = Decimal(line[6])
+            return invest_stmt_line
+
+        # print(f"{invest_stmt_line}")
+        assert False, f"Unhandled investment line: {invest_stmt_line}"
 
     def parse(self) -> Statement:
         """Main entry point for parsers"""
@@ -147,6 +267,7 @@ class FidelityCSVParser(AbstractStatementParser):
             reader = csv.reader(self.fin)
 
             for csv_line in reader:
+
                 self.cur_record += 1
                 if not csv_line:
                     continue
