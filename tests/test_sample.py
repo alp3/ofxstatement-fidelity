@@ -14,3 +14,14 @@ def test_fidelity() -> None:
     statement = parser.parse()
 
     assert statement is not None
+
+
+def test_fidelity_t_bill_purchase_and_sale() -> None:
+    plugin = FidelityPlugin(UI(), {})
+    here = os.path.dirname(__file__)
+    fidelity_filename = os.path.join(here, "tbill.csv")
+
+    parser = plugin.get_parser(fidelity_filename)
+    statement = parser.parse()
+
+    assert statement is not None
