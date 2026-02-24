@@ -10,6 +10,10 @@ from ofxstatement.parser import AbstractStatementParser
 from ofxstatement.plugin import Plugin
 from ofxstatement.statement import InvestStatementLine, Statement, StatementLine
 
+from datetime import datetime, date
+from decimal import Decimal, Decimal as D
+from typing import Any, Dict, Optional, TextIO
+
 
 class FidelityPlugin(Plugin):
     """Fidelity CSV plugin for ofxstatement"""
@@ -228,7 +232,6 @@ class FidelityCSVParser(AbstractStatementParser):
         if re.match(r"^REDEMPTION PAYOUT .*UNITED STATES TREAS BILLS", line[1]):
 
             invest_stmt_line.trntype = "SELLDEBT"
-            invest_stmt_line.trntype_detailed = "SELL"
             invest_stmt_line.security_id = line[2]  # CUSIP
             invest_stmt_line.unit_price = Decimal(
                 "100"
